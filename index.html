@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Designing a streamer leaderboard API for an online casino</title>
+<meta name="description" content="Endpoint shapes, ranking rules, caching and anti-abuse rules for wager-based streamer and affiliate leaderboards.">
+<style>
+body{font-family:system-ui,sans-serif;max-width:780px;margin:2.5rem auto;padding:0 1.2rem;line-height:1.6;color:#17202a}
+pre{background:#0f172a;color:#e2e8f0;padding:1rem;border-radius:8px;overflow:auto;font-size:.88rem}
+code{font-family:ui-monospace,Menlo,Consolas,monospace}h2{margin-top:2rem}
+.tip{border-left:4px solid #10b981;background:#ecfdf5;padding:.7rem 1rem}
+</style>
+</head>
+<body>
+<h1>Designing a streamer leaderboard API for an online casino</h1>
+<p>Streamers and their communities like a race: whoever wagers most with the streamer's code this month wins a share of a prize pool. The leaderboard shows on stream as an overlay and on the streamer's own site, which means it is read by thousands of people at once and attacked by anyone who wants the prize. This is how I would shape the API. The endpoint names are an example design, not any vendor's actual interface.</p>
+
+<h2>1. Model the race, not just the ranking</h2>
+<p>A leaderboard belongs to a <em>campaign</em>: a streamer or affiliate code, a time window, a scoring rule and a prize table. Make the campaign a first-class object and the leaderboard a view of it.</p>
+<pre><code>GET /v1/campaigns/{campaign_id}
+{
+  "campaign_id": "nov-race-01",
+  "code": "STREAMERX",
+  "starts_at": "2026-11-01T00:00:00Z",
+  "ends_at":   "2026-12-01T00:00:00Z",
+  "metric": "wagered",            // or "net_wagered", "points"
+  "currency": "EUR",
+  "prizes": [{"rank": 1, "amount": "500.00"}, {"rank": 2, "amount": "250.00"}],
+  "status": "live"                // scheduled | live | settling | final
+}</code></pre>
+
+<h2>2. The leaderboard endpoint</h2>
+<pre><code>GET /v1/campaigns/{campaign_id}/leaderboard?limit=20
+{
+  "as_of": "2026-11-05T09:15:00Z",
+  "entries": [
+    {"rank": 1, "player": "ma***88", "score": "18240.50"},
+    {"rank": 2, "player": "jo***k",  "score": "17110.00"}
+  ],
+  "next_update_in_seconds": 60
+}</code></pre>
+<ul>
+<li><strong>Mask player names</strong> server-side. Never send a full username or player ID to a public overlay, and let players opt out of appearing at all.</li>
+<li><strong>Send scores as decimal strings</strong> so JavaScript overlays don't render 17110.000000002.</li>
+<li><strong>Return <code>as_of</code></strong> so the overlay can show "updated 1 min ago" and nobody argues about a stale screenshot.</li>
+</ul>
+
+<h2>3. Scoring rules that survive abuse</h2>
+<p>Raw wagered amount is the easiest metric and the easiest to game. A player can wager €10,000 on a 99% RTP game or on both sides of a roulette bet at almost no cost. Defences that work:</p>
+<ul>
+<li><strong>Weight by game type</strong>: count slots at 100% and low-edge table games at a fraction, the same way bonus wagering contributions work.</li>
+<li><strong>Exclude hedged and very low-risk bets</strong>, e.g. covering most roulette numbers, or sports bets below a minimum odds threshold.</li>
+<li><strong>Exclude bonus-funded stakes</strong> or count them separately.</li>
+<li><strong>Cap per-bet contribution</strong> so one huge spin can't decide the race.</li>
+<li><strong>Freeze at <code>ends_at</code>, then settle</strong>: switch status to <code>settling</code>, run fraud and duplicate-account checks, and only then publish <code>final</code>. Prizes are paid on the final list.</li>
+</ul>
+
+<h2>4. Built for overlay traffic</h2>
+<div class="tip">An overlay polling every 5 seconds from 3,000 viewers is 600 requests per second for one streamer. Never compute the ranking per request.</div>
+<ul>
+<li>Recompute rankings on a schedule (every 30–60 s) or on a stream of bet events into a sorted set, and serve a cached snapshot.</li>
+<li>Set <code>Cache-Control: public, max-age=30</code> and put the endpoint behind a CDN. The data is public by design.</li>
+<li>Offer a server-sent events or WebSocket feed for overlays that want live updates, publishing only when the top N changes.</li>
+<li>Rate-limit per API key and issue keys per streamer, so a leaked key can be rotated without breaking everyone.</li>
+</ul>
+
+<h2>5. Endpoints for the streamer's own tools</h2>
+<pre><code>GET /v1/campaigns?code=STREAMERX&amp;status=live,final   // history for their website
+GET /v1/campaigns/{id}/me                           // authenticated player: own rank and gap to next
+POST /v1/webhooks                                   // notify on rank change in top 3, on final</code></pre>
+<p>The <code>/me</code> endpoint is the feature players love: "you are 14th, €320 behind 13th". Keep it authenticated and never expose other players' exact data through it.</p>
+
+<h2>6. Compliance notes</h2>
+<p>Wagering races encourage more play by design, so check whether your licence allows them in each market, and how. Exclude self-excluded players, players on a time-out and anyone under safer-gambling review automatically, and show the full terms (scoring rule, exclusions, prize table) on a public page linked from the overlay.</p>
+
+<p style="font-size:.9rem;color:#566573">Robin Doelman, Spinlab Studio. Affiliate tracking and streamer leaderboard endpoints are part of <a href="https://spinlab.studio">the platform we build at Spinlab Studio</a>; this write-up is a general design guide for any stack.</p>
+</body>
+</html>
